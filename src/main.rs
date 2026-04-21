@@ -1,17 +1,33 @@
-use std::vec;
+use std::fmt::Debug;
 
 use builder_concept::builder;
 
-#[derive(Debug, Clone, Default)]
 #[builder]
-pub struct Person {
+#[derive(Clone, Default)]
+struct Person {
     name: String,
     age: u8,
     hobbies: Vec<String>,
 }
 
+impl Debug for Person {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Person")
+            .field("name", &self.name)
+            .field("age", &self.age)
+            .field("hobbies", &self.hobbies)
+            .finish()
+    }
+}
+
 fn main() {
-    dbg!(Person::default());
+    let p = PersonBuilder::new()
+        .name("Hello".to_string())
+        .age(10)
+        .hobbies(vec!["h1".to_string()])
+        .build();
+    dbg!(p);
+
     /*
     let p1 = Person::builder()
         .name("Test".into())
