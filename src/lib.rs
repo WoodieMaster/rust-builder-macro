@@ -1,10 +1,103 @@
-use std::iter::{Once, Repeat, repeat};
+use std::iter::repeat;
 
 use proc_macro::TokenStream as Pm1TokenStream;
 use proc_macro2::{Span, TokenStream as Pm2TokenStream};
 
-use quote::quote;
-use syn::Ident;
+use quote::{ToTokens, quote};
+use syn::{
+    Expr, Ident, Token,
+    parse::{Parse, ParseBuffer, ParseStream},
+};
+
+#[derive(Clone, Debug, PartialEq, Default)]
+enum AttrDebugOption {
+    #[default]
+    Simple,
+    Full,
+}
+
+impl Parse for AttrDebugOption {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let ident: syn::Ident = input
+            .parse()
+            .map_err(|e| syn::Error::new(e.span(), "Requires single identifier"))?;
+
+        if ident == "simple" {
+            Ok(Self::Simple)
+        } else if ident == "full" {
+            Ok(Self::Full)
+        } else {
+            Err(syn::Error::new(ident.span(), "Expected valid Debug Option").into())
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct Attributes {
+    debug: AttrDebugOption,
+    use_default: bool,
+}
+
+impl Parse for Attributes {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let mut attr = Self::default();
+
+        while !input.is_empty() {
+            let ident: Ident = input
+                .parse()
+                .map_err(|e| syn::Error::new(e.span(), "Requires single identifier"))?;
+
+            let mut value: Option<Expr> = None;
+
+            if input.peek(Token![=]) {
+                input.parse::<Token![=]>().expect("Token `=` peeked");
+                value = Some(
+                    input
+                        .parse()
+                        .map_err(|e| syn::Error::new(e.span(), "Value must be an expression"))?,
+                );
+            }
+
+            if ident == "debug" {
+                attr.debug = syn::parse::Parser::parse2(
+                    |input: ParseStream<'_>| AttrDebugOption::parse(input),
+                    value
+                        .ok_or_else(|| {
+                            syn::Error::new(input.span(), "Debug attribute is not a flag")
+                        })?
+                        .into_token_stream(),
+                )?;
+            } else if ident == "use_default" {
+                if let Some(expr) = value {
+                    attr.use_default = syn::parse::Parser::parse2(
+                        |input: ParseStream<'_>| {
+                            input
+                                .parse::<syn::LitBool>()
+                                .map_err(|e| {
+                                    syn::Error::new(
+                                        e.span(),
+                                        "use_default requires a boolean for its value",
+                                    )
+                                })
+                                .map(|v| v.value)
+                        },
+                        expr.into_token_stream(),
+                    )?;
+                } else {
+                    attr.use_default = true;
+                }
+            }
+
+            if input.peek(Token![,]) {
+                input.parse::<Token![,]>().expect("Token `,` peeked");
+            } else if !input.is_empty() {
+                return Err(syn::Error::new(input.span(), "Expected `,`"));
+            }
+        }
+
+        return Ok(attr);
+    }
+}
 
 #[proc_macro_attribute]
 pub fn builder(attr: Pm1TokenStream, item: Pm1TokenStream) -> Pm1TokenStream {
@@ -12,12 +105,21 @@ pub fn builder(attr: Pm1TokenStream, item: Pm1TokenStream) -> Pm1TokenStream {
 }
 
 fn builder_impl(attr: Pm2TokenStream, input: Pm2TokenStream) -> Pm2TokenStream {
-    let input: syn::ItemStruct = match syn::parse2::<syn::ItemStruct>(input) {
+    let input: syn::ItemStruct = match syn::parse2(input) {
         Ok(is) => is,
         Err(e) => {
-            return darling::Error::from(e).write_errors();
+            return e.to_compile_error().into();
         }
     };
+
+    let attr_result = syn::parse::Parser::parse2(|b: &ParseBuffer<'_>| Attributes::parse(b), attr);
+    let args = match attr_result {
+        Ok(v) => v,
+        Err(e) => {
+            return e.to_compile_error().into();
+        }
+    };
+
     let vis = input.vis.clone();
     let ident = &input.ident;
     let mut build_name = input.ident.to_string();
@@ -65,6 +167,41 @@ fn builder_impl(attr: Pm2TokenStream, input: Pm2TokenStream) -> Pm2TokenStream {
         }
     });
 
+    let debug = match args.debug {
+        AttrDebugOption::Full => quote! {
+            impl<#(const #generic_idents: bool),*> std::fmt::Debug for #build_ident<#(#generic_idents),*> {
+                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    f.debug_struct(#build_name)
+                        #(.field(#field_names, &self.#field_idents))*
+                        .finish()
+                }
+            }
+        },
+        AttrDebugOption::Simple => quote! {
+            impl<#(const #generic_idents: bool),*> std::fmt::Debug for #build_ident<#(#generic_idents),*> {
+                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    f.debug_struct(#build_name)
+                        #(.field(#field_names, &#generic_idents))*
+                        .finish()
+                }
+            }
+        },
+    };
+
+    let build_with_default = if args.use_default {
+        quote! {
+            fn build_with_default(self) -> #ident {
+                let default: #ident = core::default::Default::default();
+
+                #ident {
+                    #(#field_idents: self.#field_idents.unwrap_or(default.#field_idents)),*
+                }
+            }
+        }
+    } else {
+        quote!()
+    };
+
     return quote! {
         #input
 
@@ -74,13 +211,7 @@ fn builder_impl(attr: Pm2TokenStream, input: Pm2TokenStream) -> Pm2TokenStream {
             ),*
         }
 
-        impl<#(const #generic_idents: bool),*> std::fmt::Debug for #build_ident<#(#generic_idents),*> {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.debug_struct(#build_name)
-                    #(.field(#field_names, &#generic_idents))*
-                    .finish()
-            }
-        }
+        #debug
 
         impl #build_ident {
             pub fn new() -> #build_ident<#(#all_false_generics),*> {
@@ -92,6 +223,8 @@ fn builder_impl(attr: Pm2TokenStream, input: Pm2TokenStream) -> Pm2TokenStream {
 
         impl<#(const #generic_idents: bool),*> #build_ident<#(#generic_idents),*> {
             #(#setter_fns)*
+
+            #build_with_default
         }
 
         impl #build_ident<#(#all_true_generics),*> {

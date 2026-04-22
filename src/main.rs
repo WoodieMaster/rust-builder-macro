@@ -2,7 +2,7 @@ use std::fmt::Debug;
 
 use builder_concept::builder;
 
-#[builder]
+#[builder(use_default = true, debug = full)]
 #[derive(Clone, Default)]
 struct Person {
     name: String,
@@ -26,7 +26,12 @@ fn main() {
         .age(10)
         .hobbies(vec!["h1".to_string()])
         .build();
-    dbg!(p);
+
+    dbg!(
+        PersonBuilder::new()
+            .name("".to_string())
+            .build_with_default()
+    );
 
     /*
     let p1 = Person::builder()
