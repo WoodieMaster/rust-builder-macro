@@ -138,6 +138,11 @@ fn builder_impl(attr: Pm2TokenStream, input: Pm2TokenStream) -> Pm2TokenStream {
     let type_params: Vec<&TypeParam> = input.generics.type_params().collect();
     let type_param_idents: Vec<&Ident> = type_params.iter().map(|l| &l.ident).collect();
 
+    let where_clause = match input.generics.where_clause.as_ref() {
+        Some(w) => w.to_token_stream(),
+        None => quote!(),
+    };
+
     let mut build_name = input.ident.to_string();
     build_name.push_str("Builder");
     let build_ident = Ident::new(&build_name, Span::call_site());
@@ -206,25 +211,25 @@ fn builder_impl(attr: Pm2TokenStream, input: Pm2TokenStream) -> Pm2TokenStream {
         }
     });
 
-    let debug = match args.debug {
+    let debug_inner = match args.debug {
         AttrDebugOption::Full => quote! {
-            impl<#generic_definition #(const #generic_idents: bool),*> std::fmt::Debug for #build_ident<#generic_use #(#generic_idents),*> {
-                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                    f.debug_struct(#build_name)
-                        #(.field(#field_names, &self.#field_idents))*
-                        .finish()
-                }
-            }
+            f.debug_struct(#build_name)
+                #(.field(#field_names, &self.#field_idents))*
+                .finish()
         },
         AttrDebugOption::Simple => quote! {
-            impl<#generic_definition #(const #generic_idents: bool),*> std::fmt::Debug for #build_ident<#generic_use #(#generic_idents),*> {
-                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                    f.debug_struct(#build_name)
-                        #(.field(#field_names, &#generic_idents))*
-                        .finish()
-                }
-            }
+            f.debug_struct(#build_name)
+                #(.field(#field_names, &#generic_idents))*
+                .finish()
         },
+    };
+
+    let debug = quote! {
+        impl<#generic_definition #(const #generic_idents: bool),*> std::fmt::Debug for #build_ident<#generic_use #(#generic_idents),*> #where_clause {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                #debug_inner
+            }
+        }
     };
 
     let build_with_default = if args.use_default {
@@ -243,7 +248,7 @@ fn builder_impl(attr: Pm2TokenStream, input: Pm2TokenStream) -> Pm2TokenStream {
 
     let builder_fn = if args.builder_fn {
         quote! {
-            impl<#generic_definition> #ident<#generic_use> {
+            impl<#generic_definition> #ident<#generic_use> #where_clause {
                 fn builder() -> #build_ident<#generic_use> {#build_ident::new()}
             }
         }
@@ -254,7 +259,7 @@ fn builder_impl(attr: Pm2TokenStream, input: Pm2TokenStream) -> Pm2TokenStream {
     let output = quote! {
         #input
 
-        #vis struct #build_ident<#generic_definition #(const #generic_idents: bool = false),*> {
+        #vis struct #build_ident<#generic_definition #(const #generic_idents: bool = false),*> #where_clause {
             #(
                #field_idents: Option<#field_types>
             ),*
@@ -264,7 +269,7 @@ fn builder_impl(attr: Pm2TokenStream, input: Pm2TokenStream) -> Pm2TokenStream {
 
         #debug
 
-        impl<#generic_definition> #build_ident<#generic_use> {
+        impl<#generic_definition> #build_ident<#generic_use> #where_clause {
             pub fn new() -> #build_ident<#generic_use #(#all_false_generics),*> {
                 return #build_ident {
                     #(#field_idents: None),*
@@ -272,13 +277,13 @@ fn builder_impl(attr: Pm2TokenStream, input: Pm2TokenStream) -> Pm2TokenStream {
             }
         }
 
-        impl<#generic_definition #(const #generic_idents: bool),*> #build_ident<#generic_use #(#generic_idents),*> {
+        impl<#generic_definition #(const #generic_idents: bool),*> #build_ident<#generic_use #(#generic_idents),*> #where_clause {
             #(#setter_fns)*
 
             #build_with_default
         }
 
-        impl<#generic_definition> #build_ident<#generic_use #(#all_true_generics),*> {
+        impl<#generic_definition> #build_ident<#generic_use #(#all_true_generics),*> #where_clause {
             pub fn build(self) -> #ident<#generic_use> {
                 return #ident {
                     #(#field_idents: self.#field_idents.unwrap()),*

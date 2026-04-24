@@ -3,19 +3,25 @@ use wood_builder::builder;
 
 #[builder(use_default, debug = simple, builder_fn)]
 #[derive(Clone, Default, Debug)]
-struct Person<H: IntoIterator<Item = String> + Default> {
+struct Person<H>
+where
+    H: IntoIterator<Item = String> + Default,
+{
     name: String,
     age: u8,
     hobbies: H,
 }
 
 #[builder(builder_fn)]
-struct RefMe<'a, const N: u8, T: ?Sized> {
-    r: &'a T,
+struct RefMe<'a, T>
+where
+    T: ?Sized,
+{
+    _r: &'a T,
 }
 
 fn main() {
-    let r: RefMe<'static, 10, str> = RefMe::builder().r("").build();
+    let r: RefMe<'static, str> = RefMe::builder()._r("").build();
 
     let p: Person<Vec<String>> = PersonBuilder::new()
         .name("Hello".to_string())
