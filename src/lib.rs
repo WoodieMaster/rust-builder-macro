@@ -1,12 +1,12 @@
-use std::iter::repeat;
+use std::iter::repeat_n;
 
 use proc_macro::TokenStream as Pm1TokenStream;
 use proc_macro2::{Span, TokenStream as Pm2TokenStream};
 
 use quote::{ToTokens, quote};
 use syn::{
-    Expr, Ident, Token,
-    parse::{self, Parse, ParseBuffer, ParseStream, Parser},
+    ConstParam, Expr, Ident, Lifetime, LifetimeParam, Token, TypeParam,
+    parse::{Parse, ParseBuffer, ParseStream},
     spanned::Spanned,
 };
 
@@ -28,7 +28,7 @@ impl Parse for AttrDebugOption {
         } else if ident == "full" {
             Ok(Self::Full)
         } else {
-            Err(syn::Error::new(ident.span(), "Expected valid Debug Option").into())
+            Err(syn::Error::new(ident.span(), "Expected valid Debug Option"))
         }
     }
 }
@@ -104,7 +104,7 @@ impl Parse for Attributes {
             }
         }
 
-        return Ok(attr);
+        Ok(attr)
     }
 }
 
@@ -117,7 +117,7 @@ fn builder_impl(attr: Pm2TokenStream, input: Pm2TokenStream) -> Pm2TokenStream {
     let input: syn::ItemStruct = match syn::parse2(input) {
         Ok(is) => is,
         Err(e) => {
-            return e.to_compile_error().into();
+            return e.to_compile_error();
         }
     };
 
@@ -125,12 +125,19 @@ fn builder_impl(attr: Pm2TokenStream, input: Pm2TokenStream) -> Pm2TokenStream {
     let args = match attr_result {
         Ok(v) => v,
         Err(e) => {
-            return e.to_compile_error().into();
+            return e.to_compile_error();
         }
     };
 
-    let vis = input.vis.clone();
+    let vis = &input.vis;
     let ident = &input.ident;
+    let lifetimes: Vec<&LifetimeParam> = input.generics.lifetimes().collect();
+    let lifetime_idents: Vec<&Lifetime> = lifetimes.iter().map(|l| &l.lifetime).collect();
+    let const_params: Vec<&ConstParam> = input.generics.const_params().collect();
+    let const_param_idents: Vec<&Ident> = const_params.iter().map(|l| &l.ident).collect();
+    let type_params: Vec<&TypeParam> = input.generics.type_params().collect();
+    let type_param_idents: Vec<&Ident> = type_params.iter().map(|l| &l.ident).collect();
+
     let mut build_name = input.ident.to_string();
     build_name.push_str("Builder");
     let build_ident = Ident::new(&build_name, Span::call_site());
@@ -138,24 +145,22 @@ fn builder_impl(attr: Pm2TokenStream, input: Pm2TokenStream) -> Pm2TokenStream {
     let fields = &input.fields;
 
     let field_idents: Vec<&Ident> = {
-        let optional = fields.iter().map(|f| f.ident.as_ref()).fold(
-            Some(Vec::<&Ident>::with_capacity(fields.len())),
-            |acc, i| {
-                if let Some(el) = i
-                    && let Some(mut v) = acc
-                {
-                    v.push(el);
-                    Some(v)
-                } else {
-                    None
-                }
-            },
-        );
+        let optional =
+            fields.iter().map(|f| f.ident.as_ref()).try_fold(
+                Vec::<&Ident>::with_capacity(fields.len()),
+                |mut acc, el| match el {
+                    Some(i) => {
+                        acc.push(i);
+                        Ok(acc)
+                    }
+                    None => Err(syn::Error::new(input.span(), "Tuples are not supported")
+                        .into_compile_error()),
+                },
+            );
 
-        if let Some(fields) = optional {
-            fields
-        } else {
-            return syn::Error::new(input.span(), "Tuples are not supported").into_compile_error();
+        match optional {
+            Ok(v) => v,
+            Err(e) => return e,
         }
     };
     let field_names: Vec<String> = field_idents.iter().map(|f| f.to_string()).collect();
@@ -165,8 +170,12 @@ fn builder_impl(attr: Pm2TokenStream, input: Pm2TokenStream) -> Pm2TokenStream {
         .map(|f| field_name_to_generic(f))
         .collect();
 
-    let all_true_generics = repeat(quote![true]).take(fields.len());
-    let all_false_generics = repeat(quote![false]).take(fields.len());
+    let all_true_generics = repeat_n(quote![true], fields.len());
+    let all_false_generics = repeat_n(quote![false], fields.len());
+
+    let generic_definition = quote!(#(#lifetimes,)* #(#const_params,)* #(#type_params,)*);
+    let generic_use =
+        quote!(#(#lifetime_idents,)* #(#const_param_idents,)* #(#type_param_idents,)*);
 
     let setter_fns = fields.iter().enumerate().map(|(active_idx, active_field)| {
         let ident = active_field.ident.as_ref().unwrap();
@@ -189,7 +198,7 @@ fn builder_impl(attr: Pm2TokenStream, input: Pm2TokenStream) -> Pm2TokenStream {
         });
 
         quote! {
-            pub fn #ident(self, value: #ty) -> #build_ident<#(#generics),*> {
+            pub fn #ident(self, value: #ty) -> #build_ident<#generic_use #(#generics),*> {
                 #build_ident {
                     #(#fields),*
                 }
@@ -199,7 +208,7 @@ fn builder_impl(attr: Pm2TokenStream, input: Pm2TokenStream) -> Pm2TokenStream {
 
     let debug = match args.debug {
         AttrDebugOption::Full => quote! {
-            impl<#(const #generic_idents: bool),*> std::fmt::Debug for #build_ident<#(#generic_idents),*> {
+            impl<#generic_definition #(const #generic_idents: bool),*> std::fmt::Debug for #build_ident<#generic_use #(#generic_idents),*> {
                 fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                     f.debug_struct(#build_name)
                         #(.field(#field_names, &self.#field_idents))*
@@ -208,7 +217,7 @@ fn builder_impl(attr: Pm2TokenStream, input: Pm2TokenStream) -> Pm2TokenStream {
             }
         },
         AttrDebugOption::Simple => quote! {
-            impl<#(const #generic_idents: bool),*> std::fmt::Debug for #build_ident<#(#generic_idents),*> {
+            impl<#generic_definition #(const #generic_idents: bool),*> std::fmt::Debug for #build_ident<#generic_use #(#generic_idents),*> {
                 fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                     f.debug_struct(#build_name)
                         #(.field(#field_names, &#generic_idents))*
@@ -220,8 +229,8 @@ fn builder_impl(attr: Pm2TokenStream, input: Pm2TokenStream) -> Pm2TokenStream {
 
     let build_with_default = if args.use_default {
         quote! {
-            fn build_with_default(self) -> #ident {
-                let default: #ident = core::default::Default::default();
+            fn build_with_default(self) -> #ident<#generic_use> {
+                let default: #ident<#generic_use> = core::default::Default::default();
 
                 #ident {
                     #(#field_idents: self.#field_idents.unwrap_or(default.#field_idents)),*
@@ -234,18 +243,18 @@ fn builder_impl(attr: Pm2TokenStream, input: Pm2TokenStream) -> Pm2TokenStream {
 
     let builder_fn = if args.builder_fn {
         quote! {
-            impl #ident {
-                fn builder() -> #build_ident {#build_ident::new()}
+            impl<#generic_definition> #ident<#generic_use> {
+                fn builder() -> #build_ident<#generic_use> {#build_ident::new()}
             }
         }
     } else {
         quote!()
     };
 
-    return quote! {
+    let output = quote! {
         #input
 
-        #vis struct #build_ident<#(const #generic_idents: bool = false),*> {
+        #vis struct #build_ident<#generic_definition #(const #generic_idents: bool = false),*> {
             #(
                #field_idents: Option<#field_types>
             ),*
@@ -255,39 +264,40 @@ fn builder_impl(attr: Pm2TokenStream, input: Pm2TokenStream) -> Pm2TokenStream {
 
         #debug
 
-        impl #build_ident {
-            pub fn new() -> #build_ident<#(#all_false_generics),*> {
+        impl<#generic_definition> #build_ident<#generic_use> {
+            pub fn new() -> #build_ident<#generic_use #(#all_false_generics),*> {
                 return #build_ident {
                     #(#field_idents: None),*
                 }
             }
         }
 
-        impl<#(const #generic_idents: bool),*> #build_ident<#(#generic_idents),*> {
+        impl<#generic_definition #(const #generic_idents: bool),*> #build_ident<#generic_use #(#generic_idents),*> {
             #(#setter_fns)*
 
             #build_with_default
         }
 
-        impl #build_ident<#(#all_true_generics),*> {
-            pub fn build(self) -> #ident {
+        impl<#generic_definition> #build_ident<#generic_use #(#all_true_generics),*> {
+            pub fn build(self) -> #ident<#generic_use> {
                 return #ident {
                     #(#field_idents: self.#field_idents.unwrap()),*
                 }
             }
         }
 
-    }
-    .into();
+    };
+
+    output
 }
 
 fn field_name_to_generic(field_name: &str) -> Ident {
     let name = format!(
-        "T{}",
+        "C_{}",
         field_name
             .split('_')
             .map(|p| {
-                if p.len() == 0 {
+                if p.is_empty() {
                     return String::new();
                 }
                 let mut c = p.chars();

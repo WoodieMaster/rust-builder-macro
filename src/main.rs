@@ -1,29 +1,37 @@
 use std::fmt::Debug;
-
 use wood_builder::builder;
 
 #[builder(use_default, debug = simple, builder_fn)]
 #[derive(Clone, Default, Debug)]
-struct Person {
+struct Person<H: IntoIterator<Item = String> + Default> {
     name: String,
     age: u8,
-    hobbies: Vec<String>,
+    hobbies: H,
+}
+
+#[builder(builder_fn)]
+struct RefMe<'a, const N: u8, T: ?Sized> {
+    r: &'a T,
 }
 
 fn main() {
-    let p = PersonBuilder::new()
+    let r: RefMe<'static, 10, str> = RefMe::builder().r("").build();
+
+    let p: Person<Vec<String>> = PersonBuilder::new()
         .name("Hello".to_string())
         .age(10)
-        .hobbies(vec!["h1".to_string()])
+        .hobbies(vec!["A1".to_string()])
         .build();
 
-    let p = Person::builder().build_with_default();
+    let p: Person<Vec<String>> = Person::builder().build_with_default();
 
-    PersonBuilder::new()
+    println!("{:?}", p.hobbies);
+
+    PersonBuilder::<Vec<String>>::new()
         .name("Hello".into())
         .build_with_default();
 
-    dbg!(PersonBuilder::new().name("".to_string()));
+    dbg!(PersonBuilder::<Vec<String>>::new().name("".to_string()));
 
     let p1 = Person::builder()
         .name("Test".into())
@@ -33,7 +41,7 @@ fn main() {
 
     dbg!(p1);
 
-    let p2 = Person::builder()
+    let p2 = Person::<Vec<String>>::builder()
         .name("P2".into())
         /* .hobby("H1".to_string())
         .hobby("h2".to_string())
