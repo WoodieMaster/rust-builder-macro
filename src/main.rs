@@ -13,6 +13,10 @@ where
 }
 
 #[builder(builder_fn)]
+#[derive(Debug)]
+struct Vec2(f32, f32);
+
+#[builder(builder_fn)]
 struct RefMe<'a, T>
 where
     T: ?Sized,
@@ -22,7 +26,8 @@ where
 
 fn main() {
     let r: RefMe<'static, str> = RefMe::builder()._r("").build();
-
+    let v = Vec2(0.0, 1.0);
+    println!("{}, {}", v.0, v.1);
     let p: Person<Vec<String>> = PersonBuilder::new()
         .name("Hello".to_string())
         .age(10)
