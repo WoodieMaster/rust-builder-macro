@@ -1,6 +1,6 @@
 use std::fmt::Debug;
 
-use builder_concept::builder;
+use wood_builder::builder;
 
 #[builder(use_default, debug = simple, builder_fn)]
 #[derive(Clone, Default, Debug)]
