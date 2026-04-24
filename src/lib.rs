@@ -6,7 +6,8 @@ use proc_macro2::{Span, TokenStream as Pm2TokenStream};
 use quote::{ToTokens, quote};
 use syn::{
     Expr, Ident, Token,
-    parse::{Parse, ParseBuffer, ParseStream},
+    parse::{self, Parse, ParseBuffer, ParseStream, Parser},
+    spanned::Spanned,
 };
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -36,6 +37,7 @@ impl Parse for AttrDebugOption {
 struct Attributes {
     debug: AttrDebugOption,
     use_default: bool,
+    builder_fn: bool,
 }
 
 impl Parse for Attributes {
@@ -69,22 +71,29 @@ impl Parse for Attributes {
                 )?;
             } else if ident == "use_default" {
                 if let Some(expr) = value {
-                    attr.use_default = syn::parse::Parser::parse2(
-                        |input: ParseStream<'_>| {
-                            input
-                                .parse::<syn::LitBool>()
-                                .map_err(|e| {
-                                    syn::Error::new(
-                                        e.span(),
-                                        "use_default requires a boolean for its value",
-                                    )
-                                })
-                                .map(|v| v.value)
-                        },
-                        expr.into_token_stream(),
-                    )?;
+                    attr.use_default = syn::parse2::<syn::LitBool>(expr.into_token_stream())
+                        .map_err(|e| {
+                            syn::Error::new(
+                                e.span(),
+                                "use_default requires a boolean for its value",
+                            )
+                        })?
+                        .value;
                 } else {
                     attr.use_default = true;
+                }
+            } else if ident == "builder_fn" {
+                if let Some(expr) = value {
+                    attr.builder_fn = syn::parse2::<syn::LitBool>(expr.into_token_stream())
+                        .map_err(|e| {
+                            syn::Error::new(
+                                e.span(),
+                                "use_default requires a boolean for its value",
+                            )
+                        })?
+                        .value;
+                } else {
+                    attr.builder_fn = true;
                 }
             }
 
@@ -127,7 +136,28 @@ fn builder_impl(attr: Pm2TokenStream, input: Pm2TokenStream) -> Pm2TokenStream {
     let build_ident = Ident::new(&build_name, Span::call_site());
 
     let fields = &input.fields;
-    let field_idents: Vec<&Ident> = fields.iter().map(|f| f.ident.as_ref().unwrap()).collect();
+
+    let field_idents: Vec<&Ident> = {
+        let optional = fields.iter().map(|f| f.ident.as_ref()).fold(
+            Some(Vec::<&Ident>::with_capacity(fields.len())),
+            |acc, i| {
+                if let Some(el) = i
+                    && let Some(mut v) = acc
+                {
+                    v.push(el);
+                    Some(v)
+                } else {
+                    None
+                }
+            },
+        );
+
+        if let Some(fields) = optional {
+            fields
+        } else {
+            return syn::Error::new(input.span(), "Tuples are not supported").into_compile_error();
+        }
+    };
     let field_names: Vec<String> = field_idents.iter().map(|f| f.to_string()).collect();
     let field_types = fields.iter().map(|f| &f.ty);
     let generic_idents: Vec<Ident> = field_names
@@ -202,6 +232,16 @@ fn builder_impl(attr: Pm2TokenStream, input: Pm2TokenStream) -> Pm2TokenStream {
         quote!()
     };
 
+    let builder_fn = if args.builder_fn {
+        quote! {
+            impl #ident {
+                fn builder() -> #build_ident {#build_ident::new()}
+            }
+        }
+    } else {
+        quote!()
+    };
+
     return quote! {
         #input
 
@@ -210,6 +250,8 @@ fn builder_impl(attr: Pm2TokenStream, input: Pm2TokenStream) -> Pm2TokenStream {
                #field_idents: Option<#field_types>
             ),*
         }
+
+        #builder_fn
 
         #debug
 
